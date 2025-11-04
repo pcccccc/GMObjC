@@ -73,3 +73,9 @@ iOSInjectionProject/
 # custom ignore
 Pods/
 Podfile.lock
+
+# 忽略解压后的 xcframework
+Frameworks/*.xcframework/
+
+# 保留压缩包
+!Frameworks/*.xcframework.zip
