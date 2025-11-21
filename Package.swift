@@ -13,13 +13,11 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "openssl",
-            url: "https://github.com/pcccccc/GMObjC/releases/download/1.0.9/openssl.xcframework.zip",
-            checksum: "74bd5bd53fa836e7d2c1587b7c5deb7c5968f757ff1157487cf3e8313a62a8b1"
+            path: "Frameworks/openssl.xcframework"
         ),
         .binaryTarget(
             name: "GMObjC",
-            url: "https://github.com/pcccccc/GMObjC/releases/download/1.0.9/GMObjC.xcframework.zip",
-            checksum: "c24626b2869af3fa9c277431328eb5cc9c1e31c3339dbb1ae93d9a95962ea540"
+            path: "Frameworks/GMObjC.xcframework"
         )
     ]
 )
