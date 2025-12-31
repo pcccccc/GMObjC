@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codesign:*)",
+      "Bash(xargs -I {} codesign:*)",
+      "Bash(find:*)",
+      "Bash(while read f)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)",
+      "Bash(1 ;)"
+    ]
+  }
+}
