@@ -1,8 +1,9 @@
 #import "GMSm4Utils.h"
 #import "GMSmUtils.h"
-#import <openssl/sm4.h>
 #import <openssl/evp.h>
-#import <openssl/modes.h>
+
+// SM4 block size is 16 bytes
+#define GM_SM4_BLOCK_SIZE 16
 
 @implementation GMSm4Utils
 
@@ -16,9 +17,9 @@
 }
 
 // MARK: - 生成 SM4 密钥
-/// 生成 SM4 密钥（HEX 编码格式）。返回值：长度为 SM4_BLOCK_SIZE(16) 字节密钥
+/// 生成 SM4 密钥（HEX 编码格式）。返回值：长度为 GM_SM4_BLOCK_SIZE(16) 字节密钥
 + (nullable NSString *)generateKey {
-    NSInteger len = SM4_BLOCK_SIZE;
+    NSInteger len = GM_SM4_BLOCK_SIZE;
     uint8_t bytes[len];
     int status = SecRandomCopyBytes(kSecRandomDefault, (sizeof bytes)/(sizeof bytes[0]), &bytes);
     if (status == errSecSuccess) {
@@ -54,42 +55,43 @@
 
 /// SM4 ECB 模式加密。返回值：加密后的密文
 /// @param plainData 明文（NSData 类型）
-/// @param keyData SM4 密钥，长度  SM4_BLOCK_SIZE(16) 字节任意数据
+/// @param keyData SM4 密钥，长度  GM_SM4_BLOCK_SIZE(16) 字节任意数据
 + (nullable NSData *)encryptDataWithECB:(NSData *)plainData keyData:(NSData *)keyData {
-    if (plainData.length == 0 || keyData.length != SM4_BLOCK_SIZE) {
+    if (plainData.length == 0 || keyData.length != GM_SM4_BLOCK_SIZE) {
         return nil;
     }
-    uint8_t *plain_obj = (uint8_t *)[plainData bytes];
-    size_t plain_obj_len = (size_t)[plainData length];
-    
-    // 计算填充长度
-    int pad_en = SM4_BLOCK_SIZE - plain_obj_len % SM4_BLOCK_SIZE;
-    size_t result_len = plain_obj_len + pad_en;
-    // PKCS7 填充
-    uint8_t *p_text = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
-    memcpy(p_text, plain_obj, plain_obj_len);
-    memset(p_text + plain_obj_len, pad_en, pad_en);
-    
-    uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
-    int group_num = (int)(result_len / SM4_BLOCK_SIZE);
-    // 密钥 key Hex 转 uint8_t
-    uint8_t *k_text = (uint8_t *)[keyData bytes];
-    SM4_KEY sm4Key;
-    SM4_set_key(k_text, &sm4Key);
-    // 循环加密
-    for (NSInteger i = 0; i < group_num; i++) {
-        uint8_t block[SM4_BLOCK_SIZE];
-        memcpy(block, p_text + i * SM4_BLOCK_SIZE, SM4_BLOCK_SIZE);
-        
-        SM4_encrypt(block, block, &sm4Key);
-        memcpy(result + i * SM4_BLOCK_SIZE, block, SM4_BLOCK_SIZE);
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        return nil;
     }
-    NSData *cipherData = [NSData dataWithBytes:result length:result_len];
-    // Free
-    if (p_text) { OPENSSL_free(p_text); }
-    if (result) { OPENSSL_free(result); }
-    
-    return cipherData;
+
+    const unsigned char *key = (const unsigned char *)[keyData bytes];
+    const unsigned char *input = (const unsigned char *)[plainData bytes];
+    int inputLen = (int)[plainData length];
+
+    // 分配输出缓冲区 (输入长度 + 一个块的填充)
+    int maxOutputLen = inputLen + GM_SM4_BLOCK_SIZE;
+    unsigned char *output = (unsigned char *)OPENSSL_zalloc(maxOutputLen);
+    if (output == NULL) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    int outLen = 0;
+    int finalLen = 0;
+    NSData *result = nil;
+
+    // 使用 EVP API 进行 ECB 加密 (自动 PKCS7 填充)
+    if (EVP_EncryptInit_ex(ctx, EVP_sm4_ecb(), NULL, key, NULL) == 1 &&
+        EVP_EncryptUpdate(ctx, output, &outLen, input, inputLen) == 1 &&
+        EVP_EncryptFinal_ex(ctx, output + outLen, &finalLen) == 1) {
+        result = [NSData dataWithBytes:output length:(outLen + finalLen)];
+    }
+
+    OPENSSL_free(output);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
 }
 
 // MARK: - ECB 解密
@@ -109,36 +111,42 @@
 
 /// SM4 ECB 模式解密。返回值：解密后的明文
 /// @param cipherData 密文（NSData 类型）
-/// @param keyData SM4 密钥，长度  SM4_BLOCK_SIZE(16) 字节任意数据
+/// @param keyData SM4 密钥，长度  GM_SM4_BLOCK_SIZE(16) 字节任意数据
 + (nullable NSData *)decryptDataWithECB:(NSData *)cipherData keyData:(NSData *)keyData {
-    if (cipherData.length == 0 || keyData.length != SM4_BLOCK_SIZE) {
+    if (cipherData.length == 0 || keyData.length != GM_SM4_BLOCK_SIZE) {
         return nil;
     }
-    uint8_t *c_obj = (uint8_t *)[cipherData bytes];
-    size_t c_obj_len = (size_t)[cipherData length];
-    
-    uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(c_obj_len + 1));
-    int group_num = (int)(c_obj_len / SM4_BLOCK_SIZE);
-    // 密钥 key Hex 转 uint8_t
-    uint8_t *k_text = (uint8_t *)[keyData bytes];
-    SM4_KEY sm4Key;
-    SM4_set_key(k_text, &sm4Key);
-    // 循环解密
-    for (NSInteger i = 0; i < group_num; i++) {
-        uint8_t block[SM4_BLOCK_SIZE];
-        memcpy(block, c_obj + i * SM4_BLOCK_SIZE, SM4_BLOCK_SIZE);
-        
-        SM4_decrypt(block, block, &sm4Key);
-        memcpy(result + i * SM4_BLOCK_SIZE, block, SM4_BLOCK_SIZE);
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        return nil;
     }
-    // 移除填充
-    int pad_len = (int)result[c_obj_len - 1];
-    int end_len = (int)(c_obj_len - pad_len);
-    NSData *plainData = [NSData dataWithBytes:result length:end_len];
-    // Free
-    if (result) { OPENSSL_free(result); }
-    
-    return plainData;
+
+    const unsigned char *key = (const unsigned char *)[keyData bytes];
+    const unsigned char *input = (const unsigned char *)[cipherData bytes];
+    int inputLen = (int)[cipherData length];
+
+    // 分配输出缓冲区
+    unsigned char *output = (unsigned char *)OPENSSL_zalloc(inputLen + GM_SM4_BLOCK_SIZE);
+    if (output == NULL) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    int outLen = 0;
+    int finalLen = 0;
+    NSData *result = nil;
+
+    // 使用 EVP API 进行 ECB 解密 (自动移除 PKCS7 填充)
+    if (EVP_DecryptInit_ex(ctx, EVP_sm4_ecb(), NULL, key, NULL) == 1 &&
+        EVP_DecryptUpdate(ctx, output, &outLen, input, inputLen) == 1 &&
+        EVP_DecryptFinal_ex(ctx, output + outLen, &finalLen) == 1) {
+        result = [NSData dataWithBytes:output length:(outLen + finalLen)];
+    }
+
+    OPENSSL_free(output);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
 }
 
 // MARK: - CBC 加密
@@ -160,44 +168,45 @@
 
 /// SM4 CBC 模式加密。返回值：加密后的密文
 /// @param plainData 明文（NSData 类型）
-/// @param keyData SM4 密钥，长度  SM4_BLOCK_SIZE(16) 字节任意数据
-/// @param ivecData CBC 模式需传入长度  SM4_BLOCK_SIZE(16) 字节任意字符，确保加解密相同即可
+/// @param keyData SM4 密钥，长度  GM_SM4_BLOCK_SIZE(16) 字节任意数据
+/// @param ivecData CBC 模式需传入长度  GM_SM4_BLOCK_SIZE(16) 字节任意字符，确保加解密相同即可
 + (nullable NSData *)encryptDataWithCBC:(NSData *)plainData keyData:(NSData *)keyData ivecData:(NSData *)ivecData {
-    if (plainData.length == 0 || keyData.length != SM4_BLOCK_SIZE || ivecData.length != SM4_BLOCK_SIZE) {
+    if (plainData.length == 0 || keyData.length != GM_SM4_BLOCK_SIZE || ivecData.length != GM_SM4_BLOCK_SIZE) {
         return nil;
     }
-    // 明文
-    uint8_t *p_obj = (uint8_t *)[plainData bytes];
-    size_t p_obj_len = (size_t)[plainData length];
-    
-    int pad_len = SM4_BLOCK_SIZE - p_obj_len % SM4_BLOCK_SIZE;
-    size_t result_len = p_obj_len + pad_len;
-    // PKCS7 填充
-    uint8_t *p_text = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
-    memcpy(p_text, p_obj, p_obj_len);
-    memset(p_text + p_obj_len, pad_len, pad_len);
-    
-    uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(result_len + 1));
-    // 密钥 key Hex 转 uint8_t
-    uint8_t *k_text = (uint8_t *)[keyData bytes];
-    SM4_KEY sm4Key;
-    SM4_set_key(k_text, &sm4Key);
-    // 初始化向量
-    uint8_t *iv_text = (uint8_t *)[ivecData bytes];
-    uint8_t ivec_block[SM4_BLOCK_SIZE] = {0};
-    if (iv_text) {
-        memcpy(ivec_block, iv_text, SM4_BLOCK_SIZE);
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        return nil;
     }
-    // cbc 加密
-    CRYPTO_cbc128_encrypt(p_text, result, result_len, &sm4Key, ivec_block,
-                          (block128_f)SM4_encrypt);
-    
-    NSData *cipherData = [NSData dataWithBytes:result length:result_len];
-    // Free
-    if (p_text) { OPENSSL_free(p_text); }
-    if (result) { OPENSSL_free(result); }
-    
-    return cipherData;
+
+    const unsigned char *key = (const unsigned char *)[keyData bytes];
+    const unsigned char *iv = (const unsigned char *)[ivecData bytes];
+    const unsigned char *input = (const unsigned char *)[plainData bytes];
+    int inputLen = (int)[plainData length];
+
+    // 分配输出缓冲区 (输入长度 + 一个块的填充)
+    int maxOutputLen = inputLen + GM_SM4_BLOCK_SIZE;
+    unsigned char *output = (unsigned char *)OPENSSL_zalloc(maxOutputLen);
+    if (output == NULL) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    int outLen = 0;
+    int finalLen = 0;
+    NSData *result = nil;
+
+    // 使用 EVP API 进行 CBC 加密 (自动 PKCS7 填充)
+    if (EVP_EncryptInit_ex(ctx, EVP_sm4_cbc(), NULL, key, iv) == 1 &&
+        EVP_EncryptUpdate(ctx, output, &outLen, input, inputLen) == 1 &&
+        EVP_EncryptFinal_ex(ctx, output + outLen, &finalLen) == 1) {
+        result = [NSData dataWithBytes:output length:(outLen + finalLen)];
+    }
+
+    OPENSSL_free(output);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
 }
 
 // MARK: - CBC 解密
@@ -219,37 +228,44 @@
 
 /// SM4 CBC 模式解密。返回值：解密后的明文
 /// @param cipherData 密文（NSData 类型）
-/// @param keyData SM4 密钥，长度 SM4_BLOCK_SIZE(16) 字节任意数据
-/// @param ivecData CBC 模式需传入长度  SM4_BLOCK_SIZE(16) 字节任意字符，确保加解密相同即可
+/// @param keyData SM4 密钥，长度 GM_SM4_BLOCK_SIZE(16) 字节任意数据
+/// @param ivecData CBC 模式需传入长度  GM_SM4_BLOCK_SIZE(16) 字节任意字符，确保加解密相同即可
 + (nullable NSData *)decryptDataWithCBC:(NSData *)cipherData keyData:(NSData *)keyData ivecData:(NSData *)ivecData {
-    if (cipherData.length == 0 || keyData.length != SM4_BLOCK_SIZE || ivecData.length != SM4_BLOCK_SIZE) {
+    if (cipherData.length == 0 || keyData.length != GM_SM4_BLOCK_SIZE || ivecData.length != GM_SM4_BLOCK_SIZE) {
         return nil;
     }
-    uint8_t *c_obj = (uint8_t *)[cipherData bytes];
-    size_t c_obj_len = (size_t)[cipherData length];
-    
-    uint8_t *result = (uint8_t *)OPENSSL_zalloc((int)(c_obj_len + 1));
-    // 密钥 key Hex 转 uint8_t
-    uint8_t *k_text = (uint8_t *)[keyData bytes];
-    SM4_KEY sm4Key;
-    SM4_set_key(k_text, &sm4Key);
-    // 初始化向量
-    uint8_t *iv_text = (uint8_t *)[ivecData bytes];
-    uint8_t ivec_block[SM4_BLOCK_SIZE] = {0};
-    if (iv_text) {
-        memcpy(ivec_block, iv_text, SM4_BLOCK_SIZE);
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        return nil;
     }
-    // CBC 解密
-    CRYPTO_cbc128_decrypt(c_obj, result, c_obj_len, &sm4Key, ivec_block,
-                          (block128_f)SM4_decrypt);
-    // 移除填充
-    int pad_len = (int)result[c_obj_len - 1];
-    int end_len = (int)(c_obj_len - pad_len);
-    NSData *plainData = [NSData dataWithBytes:result length:end_len];
-    // Free
-    if (result) { OPENSSL_free(result); }
-    
-    return plainData;
+
+    const unsigned char *key = (const unsigned char *)[keyData bytes];
+    const unsigned char *iv = (const unsigned char *)[ivecData bytes];
+    const unsigned char *input = (const unsigned char *)[cipherData bytes];
+    int inputLen = (int)[cipherData length];
+
+    // 分配输出缓冲区
+    unsigned char *output = (unsigned char *)OPENSSL_zalloc(inputLen + GM_SM4_BLOCK_SIZE);
+    if (output == NULL) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    int outLen = 0;
+    int finalLen = 0;
+    NSData *result = nil;
+
+    // 使用 EVP API 进行 CBC 解密 (自动移除 PKCS7 填充)
+    if (EVP_DecryptInit_ex(ctx, EVP_sm4_cbc(), NULL, key, iv) == 1 &&
+        EVP_DecryptUpdate(ctx, output, &outLen, input, inputLen) == 1 &&
+        EVP_DecryptFinal_ex(ctx, output + outLen, &finalLen) == 1) {
+        result = [NSData dataWithBytes:output length:(outLen + finalLen)];
+    }
+
+    OPENSSL_free(output);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
 }
 
 @end

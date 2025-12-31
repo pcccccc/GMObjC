@@ -1,6 +1,5 @@
 #import "GMSm3Utils.h"
 #import "GMSmUtils.h"
-#import <openssl/sm3.h>
 #import <openssl/evp.h>
 #import <openssl/hmac.h>
 
@@ -37,23 +36,35 @@
     }
     // 原文
     uint8_t *pData = (uint8_t *)[data bytes];
-    // 摘要结果
-    SM3_CTX ctx;
-    unsigned char output[SM3_DIGEST_LENGTH];
-    memset(output, 0, SM3_DIGEST_LENGTH);
-    // 计算 Hash 值
-    if (!sm3_init(&ctx)) {
+    // 摘要结果 (SM3 produces 32 bytes / 256 bits)
+    unsigned char output[32];
+    unsigned int outputLen = 0;
+    memset(output, 0, sizeof(output));
+
+    // 使用 EVP API 计算 SM3 Hash 值
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (ctx == NULL) {
         return nil;
     }
-    if (!sm3_update(&ctx, pData, (size_t)[data length])) {
+
+    int success = 1;
+    if (success && !EVP_DigestInit_ex(ctx, EVP_sm3(), NULL)) {
+        success = 0;
+    }
+    if (success && !EVP_DigestUpdate(ctx, pData, (size_t)[data length])) {
+        success = 0;
+    }
+    if (success && !EVP_DigestFinal_ex(ctx, output, &outputLen)) {
+        success = 0;
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    if (!success) {
         return nil;
     }
-    if (!sm3_final(output, &ctx)) {
-        return nil;
-    }
-    memset(&ctx, 0, sizeof(SM3_CTX));
-    
-    NSData *digestData = [NSData dataWithBytes:output length:SM3_DIGEST_LENGTH];
+
+    NSData *digestData = [NSData dataWithBytes:output length:outputLen];
     return digestData;
 }
 

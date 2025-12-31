@@ -1,9 +1,14 @@
 #import "GMSm2Utils.h"
 #import "GMSmUtils.h"
-#import <openssl/sm2.h>
 #import <openssl/bn.h>
 #import <openssl/evp.h>
+#import <openssl/ec.h>
 #import <openssl/asn1t.h>
+#import <openssl/param_build.h>
+#import <openssl/core_names.h>
+
+// SM2 默认用户 ID
+#define GM_SM2_DEFAULT_USERID "1234567812345678"
 
 //SM2 加密后密文为 ASN1 编码，此处定义 ASN1 编解码存储数据的结构体
 #ifndef GMSM2_CIPHERTEXT_ST_1
@@ -150,39 +155,97 @@ static GMSm2Utils *_instance;
     uint8_t *plain_bytes = (uint8_t *)[plainData bytes]; // 明文
     const char *public_key = hexPubKey.UTF8String; // 公钥
     size_t msg_len = plainData.length; // 明文长度
-    
-    const EVP_MD *digest = EVP_sm3(); // 摘要算法
+
     EC_GROUP *group = EC_GROUP_new_by_curve_name([self curveType]); // 椭圆曲线
-    EC_KEY *key = NULL; // 密钥对
     EC_POINT *pub_point = NULL; // 坐标
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
     uint8_t *ciphertext = NULL; // 密文
     NSData *cipherData = nil; // 密文
+
     do {
-        key = EC_KEY_new();
-        if (!EC_KEY_set_group(key, group)) {
-            break;
-        }
+        // 创建公钥点
         pub_point = EC_POINT_new(group);
-        EC_POINT_hex2point(group, public_key, pub_point, NULL);
-        if (!EC_KEY_set_public_key(key, pub_point)) {
+        if (!EC_POINT_hex2point(group, public_key, pub_point, NULL)) {
             break;
         }
+
+        // 将公钥点转换为未压缩格式的字节
+        size_t pub_key_len = EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, NULL, 0, NULL);
+        unsigned char *pub_key_buf = OPENSSL_malloc(pub_key_len);
+        if (!pub_key_buf) {
+            break;
+        }
+        EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, pub_key_buf, pub_key_len, NULL);
+
+        // 使用 EVP_PKEY_fromdata 创建 EVP_PKEY
+        OSSL_PARAM_BLD *param_bld = OSSL_PARAM_BLD_new();
+        if (!param_bld) {
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME, "SM2", 0) ||
+            !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY, pub_key_buf, pub_key_len)) {
+            OSSL_PARAM_BLD_free(param_bld);
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(param_bld);
+        OSSL_PARAM_BLD_free(param_bld);
+        OPENSSL_free(pub_key_buf);
+
+        if (!params) {
+            break;
+        }
+
+        EVP_PKEY_CTX *fromdata_ctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+        if (!fromdata_ctx || EVP_PKEY_fromdata_init(fromdata_ctx) <= 0 ||
+            EVP_PKEY_fromdata(fromdata_ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
+            EVP_PKEY_CTX_free(fromdata_ctx);
+            OSSL_PARAM_free(params);
+            break;
+        }
+        EVP_PKEY_CTX_free(fromdata_ctx);
+        OSSL_PARAM_free(params);
+
+        // 创建加密上下文
+        pctx = EVP_PKEY_CTX_new(pkey, NULL);
+        if (!pctx) {
+            break;
+        }
+
+        if (EVP_PKEY_encrypt_init(pctx) <= 0) {
+            break;
+        }
+
+        // 获取密文长度
         size_t ciphertext_len = 0;
-        if (!sm2_ciphertext_size(key, digest, msg_len, &ciphertext_len)) {
+        if (EVP_PKEY_encrypt(pctx, NULL, &ciphertext_len, plain_bytes, msg_len) <= 0) {
             break;
         }
+
         ciphertext = (uint8_t *)OPENSSL_zalloc(ciphertext_len);
-        if (!sm2_encrypt(key, digest, plain_bytes, msg_len, ciphertext, &ciphertext_len)) {
+        if (!ciphertext) {
             break;
         }
+
+        // 执行加密
+        if (EVP_PKEY_encrypt(pctx, ciphertext, &ciphertext_len, plain_bytes, msg_len) <= 0) {
+            break;
+        }
+
         cipherData = [NSData dataWithBytes:ciphertext length:ciphertext_len];
     } while (NO);
+
     // Free
     if (group) { EC_GROUP_free(group); }
     if (pub_point) { EC_POINT_free(pub_point); }
-    if (key) { EC_KEY_free(key); }
+    if (pkey) { EVP_PKEY_free(pkey); }
+    if (pctx) { EVP_PKEY_CTX_free(pctx); }
     if (ciphertext) { OPENSSL_free(ciphertext); }
-    
+
     return cipherData;
 }
 
@@ -212,46 +275,99 @@ static GMSm2Utils *_instance;
 
 // MARK: - SM2 解密
 + (nullable NSData *)deData:(NSData *)cipherData hexPriKey:(NSString *)privateHex {
-    uint8_t *cipher_bytes = (uint8_t *)[cipherData bytes]; // 明文
+    uint8_t *cipher_bytes = (uint8_t *)[cipherData bytes]; // 密文
     const char *private_key = privateHex.UTF8String; // 私钥
     size_t ctext_len = cipherData.length;
-    
-    const EVP_MD *digest = EVP_sm3(); // 摘要算法
+
     EC_GROUP *group = EC_GROUP_new_by_curve_name([self curveType]); // 椭圆曲线
     BIGNUM *pri_big_num = NULL; // 私钥
-    EC_KEY *key = NULL; // 密钥对
-    EC_POINT *pub_point = NULL; // 坐标
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
     uint8_t *plaintext = NULL; // 明文
     NSData *plainData = nil; // 明文
-    
+
     do {
+        // 解析私钥
         if (!BN_hex2bn(&pri_big_num, private_key)) {
             break;
         }
-        key = EC_KEY_new();
-        if (!EC_KEY_set_group(key, group)) {
+
+        // 获取私钥字节
+        int priv_key_len = BN_num_bytes(pri_big_num);
+        unsigned char *priv_key_buf = OPENSSL_malloc(priv_key_len);
+        if (!priv_key_buf) {
             break;
         }
-        if (!EC_KEY_set_private_key(key, pri_big_num)) {
+        BN_bn2bin(pri_big_num, priv_key_buf);
+
+        // 使用 EVP_PKEY_fromdata 创建 EVP_PKEY
+        OSSL_PARAM_BLD *param_bld = OSSL_PARAM_BLD_new();
+        if (!param_bld) {
+            OPENSSL_free(priv_key_buf);
             break;
         }
+
+        if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME, "SM2", 0) ||
+            !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, pri_big_num)) {
+            OSSL_PARAM_BLD_free(param_bld);
+            OPENSSL_free(priv_key_buf);
+            break;
+        }
+
+        OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(param_bld);
+        OSSL_PARAM_BLD_free(param_bld);
+        OPENSSL_free(priv_key_buf);
+
+        if (!params) {
+            break;
+        }
+
+        EVP_PKEY_CTX *fromdata_ctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+        if (!fromdata_ctx || EVP_PKEY_fromdata_init(fromdata_ctx) <= 0 ||
+            EVP_PKEY_fromdata(fromdata_ctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0) {
+            EVP_PKEY_CTX_free(fromdata_ctx);
+            OSSL_PARAM_free(params);
+            break;
+        }
+        EVP_PKEY_CTX_free(fromdata_ctx);
+        OSSL_PARAM_free(params);
+
+        // 创建解密上下文
+        pctx = EVP_PKEY_CTX_new(pkey, NULL);
+        if (!pctx) {
+            break;
+        }
+
+        if (EVP_PKEY_decrypt_init(pctx) <= 0) {
+            break;
+        }
+
+        // 获取明文长度
         size_t ptext_len = 0;
-        if (!sm2_plaintext_size(cipher_bytes, ctext_len, &ptext_len)) {
+        if (EVP_PKEY_decrypt(pctx, NULL, &ptext_len, cipher_bytes, ctext_len) <= 0) {
             break;
         }
+
         plaintext = (uint8_t *)OPENSSL_zalloc(ptext_len);
-        if (!sm2_decrypt(key, digest, cipher_bytes, ctext_len, plaintext, &ptext_len)) {
+        if (!plaintext) {
             break;
         }
+
+        // 执行解密
+        if (EVP_PKEY_decrypt(pctx, plaintext, &ptext_len, cipher_bytes, ctext_len) <= 0) {
+            break;
+        }
+
         plainData = [NSData dataWithBytes:plaintext length:ptext_len];
     } while (NO);
+
     // Free
     if (group) { EC_GROUP_free(group); }
-    if (pub_point) { EC_POINT_free(pub_point); }
     if (pri_big_num) { BN_free(pri_big_num); }
-    if (key) { EC_KEY_free(key); }
+    if (pkey) { EVP_PKEY_free(pkey); }
+    if (pctx) { EVP_PKEY_CTX_free(pctx); }
     if (plaintext) { OPENSSL_free(plaintext); }
-    
+
     return plainData;
 }
 
@@ -559,70 +675,152 @@ static GMSm2Utils *_instance;
         return nil;
     }
     if (userData.length == 0) {
-        userData = [NSData dataWithBytes:SM2_DEFAULT_USERID length:strlen(SM2_DEFAULT_USERID)];
+        userData = [NSData dataWithBytes:GM_SM2_DEFAULT_USERID length:strlen(GM_SM2_DEFAULT_USERID)];
     }
     const char *private_key = privateHex.UTF8String;
     uint8_t *plain_bytes = (uint8_t *)[plainData bytes];
     size_t plain_len = plainData.length;
     uint8_t *user_id = (uint8_t *)[userData bytes];
     size_t user_len = userData.length;
-    
-    ECDSA_SIG *sig = NULL;  // 签名结果
-    const BIGNUM *sig_r = NULL;
-    const BIGNUM *sig_s = NULL;
-    const EVP_MD *digest = EVP_sm3();  // 摘要算法
+
     EC_GROUP *group = EC_GROUP_new_by_curve_name([self curveType]);
     BIGNUM *pri_num = NULL;  // 私钥
-    EC_KEY *key = NULL; // 密钥对
     EC_POINT *pub_point = NULL; // 公钥坐标
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *md_ctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *sig_buf = NULL;
     NSString *sigStr = nil;  // 签名结果
+
     do {
         if (!BN_hex2bn(&pri_num, private_key)) {
             break; // 私钥转 BIGNUM
         }
-        key = EC_KEY_new();
-        if (!EC_KEY_set_group(key, group)) {
-            break;
-        }
-        if (!EC_KEY_set_private_key(key, pri_num)) {
-            break; // 设置私钥
-        }
+
+        // 从私钥计算公钥点
         pub_point = EC_POINT_new(group);
         if (!EC_POINT_mul(group, pub_point, pri_num, NULL, NULL, NULL)) {
-            break; // 私钥算出公钥
-        }
-        if (!EC_KEY_set_public_key(key, pub_point)) {
-            break; // 设置公钥
-        }
-        // 计算签名
-        sig = sm2_do_sign(key, digest, user_id, user_len, plain_bytes, plain_len);
-        if (!sig) {
             break;
         }
-        ECDSA_SIG_get0(sig, &sig_r, &sig_s);
+
+        // 将公钥点转换为未压缩格式的字节
+        size_t pub_key_len = EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, NULL, 0, NULL);
+        unsigned char *pub_key_buf = OPENSSL_malloc(pub_key_len);
+        if (!pub_key_buf) {
+            break;
+        }
+        EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, pub_key_buf, pub_key_len, NULL);
+
+        // 使用 EVP_PKEY_fromdata 创建 EVP_PKEY
+        OSSL_PARAM_BLD *param_bld = OSSL_PARAM_BLD_new();
+        if (!param_bld) {
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME, "SM2", 0) ||
+            !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY, pri_num) ||
+            !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY, pub_key_buf, pub_key_len)) {
+            OSSL_PARAM_BLD_free(param_bld);
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(param_bld);
+        OSSL_PARAM_BLD_free(param_bld);
+        OPENSSL_free(pub_key_buf);
+
+        if (!params) {
+            break;
+        }
+
+        EVP_PKEY_CTX *fromdata_ctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+        if (!fromdata_ctx || EVP_PKEY_fromdata_init(fromdata_ctx) <= 0 ||
+            EVP_PKEY_fromdata(fromdata_ctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0) {
+            EVP_PKEY_CTX_free(fromdata_ctx);
+            OSSL_PARAM_free(params);
+            break;
+        }
+        EVP_PKEY_CTX_free(fromdata_ctx);
+        OSSL_PARAM_free(params);
+
+        // 创建签名上下文
+        md_ctx = EVP_MD_CTX_new();
+        if (!md_ctx) {
+            break;
+        }
+
+        pctx = EVP_PKEY_CTX_new(pkey, NULL);
+        if (!pctx) {
+            break;
+        }
+
+        // 设置 SM2 ID
+        if (EVP_PKEY_CTX_set1_id(pctx, user_id, user_len) <= 0) {
+            break;
+        }
+        EVP_MD_CTX_set_pkey_ctx(md_ctx, pctx);
+
+        if (EVP_DigestSignInit(md_ctx, NULL, EVP_sm3(), NULL, pkey) <= 0) {
+            break;
+        }
+
+        // 获取签名长度
+        size_t sig_len = 0;
+        if (EVP_DigestSign(md_ctx, NULL, &sig_len, plain_bytes, plain_len) <= 0) {
+            break;
+        }
+
+        sig_buf = OPENSSL_malloc(sig_len);
+        if (!sig_buf) {
+            break;
+        }
+
+        // 执行签名
+        if (EVP_DigestSign(md_ctx, sig_buf, &sig_len, plain_bytes, plain_len) <= 0) {
+            break;
+        }
+
+        // 解析 DER 编码的签名获取 R 和 S
+        const unsigned char *sig_ptr = sig_buf;
+        ECDSA_SIG *ecdsa_sig = d2i_ECDSA_SIG(NULL, &sig_ptr, sig_len);
+        if (!ecdsa_sig) {
+            break;
+        }
+
+        const BIGNUM *sig_r = NULL;
+        const BIGNUM *sig_s = NULL;
+        ECDSA_SIG_get0(ecdsa_sig, &sig_r, &sig_s);
+
         char *r_hex = BN_bn2hex(sig_r);
         char *s_hex = BN_bn2hex(sig_s);
         NSString *rStr = [NSString stringWithCString:r_hex encoding:NSUTF8StringEncoding];
         NSString *sStr = [NSString stringWithCString:s_hex encoding:NSUTF8StringEncoding];
-        
+
         OPENSSL_free(r_hex);
         OPENSSL_free(s_hex);
+        ECDSA_SIG_free(ecdsa_sig);
+
         if (rStr.length == 0 || sStr.length == 0) {
             break;
         }
+
         // 根据椭圆曲线的类型，依据椭圆曲线上的点获取签名长度
         size_t maxLen = ((EC_GROUP_get_degree(group) + 7) / 8) * 2;
         NSString *paddingR = [GMSmUtils prefixPaddingZero:rStr maxLen:maxLen];
         NSString *paddingS = [GMSmUtils prefixPaddingZero:sStr maxLen:maxLen];
         sigStr = [NSString stringWithFormat:@"%@%@", paddingR, paddingS];
     } while (NO);
+
     // Free
     if (group) { EC_GROUP_free(group); }
     if (pub_point) { EC_POINT_free(pub_point); }
-    if (sig) { ECDSA_SIG_free(sig); }
-    if (key) { EC_KEY_free(key); }
     if (pri_num) { BN_free(pri_num); }
-    
+    if (pkey) { EVP_PKEY_free(pkey); }
+    if (md_ctx) { EVP_MD_CTX_free(md_ctx); }
+    if (pctx) { EVP_PKEY_CTX_free(pctx); }
+    if (sig_buf) { OPENSSL_free(sig_buf); }
+
     return sigStr;
 }
 
@@ -651,28 +849,31 @@ static GMSm2Utils *_instance;
         return NO;
     }
     if (userData.length == 0) {
-        userData = [NSData dataWithBytes:SM2_DEFAULT_USERID length:strlen(SM2_DEFAULT_USERID)];
+        userData = [NSData dataWithBytes:GM_SM2_DEFAULT_USERID length:strlen(GM_SM2_DEFAULT_USERID)];
     }
     const char *pub_key = publicHex.UTF8String;
     uint8_t *plain_bytes = (uint8_t *)[plainData bytes];
     size_t plain_len = plainData.length;
     uint8_t *user_id = (uint8_t *)[userData bytes];
     size_t user_len = userData.length;
-    
+
     NSInteger signLen = signRS.length;
     NSString *r_hex = [signRS substringToIndex:signLen/2];
     NSString *s_hex = [signRS substringFromIndex:signLen/2];
-    
+
     ECDSA_SIG *sig = NULL;  // 签名结果
     BIGNUM *sig_r = NULL;
     BIGNUM *sig_s = NULL;
-    const EVP_MD *digest = EVP_sm3();  // 摘要算法
     EC_POINT *pub_point = NULL;  // 公钥坐标
-    EC_KEY *key = NULL;  // 密钥key
     EC_GROUP *group = EC_GROUP_new_by_curve_name([self curveType]);
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *md_ctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    unsigned char *der_sig = NULL;
     BOOL isOK = NO;  // 验签结果
-    
+
     do {
+        // 解析 R 和 S
         if (!BN_hex2bn(&sig_r, r_hex.UTF8String)) {
             break;
         }
@@ -688,24 +889,95 @@ static GMSm2Utils *_instance;
         if (!ECDSA_SIG_set0(sig, sig_r, sig_s)) {
             break;
         }
-        key = EC_KEY_new();
-        if (!EC_KEY_set_group(key, group)) {
+        // sig_r 和 sig_s 现在由 sig 拥有，不需要单独释放
+
+        // 将 ECDSA_SIG 编码为 DER 格式
+        int der_len = i2d_ECDSA_SIG(sig, &der_sig);
+        if (der_len <= 0 || !der_sig) {
             break;
         }
+
+        // 创建公钥点
         pub_point = EC_POINT_new(group);
-        EC_POINT_hex2point(group, pub_key, pub_point, NULL);
-        if (!EC_KEY_set_public_key(key, pub_point)) {
+        if (!EC_POINT_hex2point(group, pub_key, pub_point, NULL)) {
             break;
         }
-        int ok = sm2_do_verify(key, digest, sig, user_id, user_len, plain_bytes, plain_len);
-        isOK = ok > 0 ? YES : NO;
+
+        // 将公钥点转换为未压缩格式的字节
+        size_t pub_key_len = EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, NULL, 0, NULL);
+        unsigned char *pub_key_buf = OPENSSL_malloc(pub_key_len);
+        if (!pub_key_buf) {
+            break;
+        }
+        EC_POINT_point2oct(group, pub_point, POINT_CONVERSION_UNCOMPRESSED, pub_key_buf, pub_key_len, NULL);
+
+        // 使用 EVP_PKEY_fromdata 创建 EVP_PKEY
+        OSSL_PARAM_BLD *param_bld = OSSL_PARAM_BLD_new();
+        if (!param_bld) {
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        if (!OSSL_PARAM_BLD_push_utf8_string(param_bld, OSSL_PKEY_PARAM_GROUP_NAME, "SM2", 0) ||
+            !OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY, pub_key_buf, pub_key_len)) {
+            OSSL_PARAM_BLD_free(param_bld);
+            OPENSSL_free(pub_key_buf);
+            break;
+        }
+
+        OSSL_PARAM *params = OSSL_PARAM_BLD_to_param(param_bld);
+        OSSL_PARAM_BLD_free(param_bld);
+        OPENSSL_free(pub_key_buf);
+
+        if (!params) {
+            break;
+        }
+
+        EVP_PKEY_CTX *fromdata_ctx = EVP_PKEY_CTX_new_from_name(NULL, "SM2", NULL);
+        if (!fromdata_ctx || EVP_PKEY_fromdata_init(fromdata_ctx) <= 0 ||
+            EVP_PKEY_fromdata(fromdata_ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
+            EVP_PKEY_CTX_free(fromdata_ctx);
+            OSSL_PARAM_free(params);
+            break;
+        }
+        EVP_PKEY_CTX_free(fromdata_ctx);
+        OSSL_PARAM_free(params);
+
+        // 创建验签上下文
+        md_ctx = EVP_MD_CTX_new();
+        if (!md_ctx) {
+            break;
+        }
+
+        pctx = EVP_PKEY_CTX_new(pkey, NULL);
+        if (!pctx) {
+            break;
+        }
+
+        // 设置 SM2 ID
+        if (EVP_PKEY_CTX_set1_id(pctx, user_id, user_len) <= 0) {
+            break;
+        }
+        EVP_MD_CTX_set_pkey_ctx(md_ctx, pctx);
+
+        if (EVP_DigestVerifyInit(md_ctx, NULL, EVP_sm3(), NULL, pkey) <= 0) {
+            break;
+        }
+
+        // 执行验签
+        int ok = EVP_DigestVerify(md_ctx, der_sig, der_len, plain_bytes, plain_len);
+        isOK = ok == 1 ? YES : NO;
     } while (NO);
+
     // Free
     if (group) { EC_GROUP_free(group); }
     if (pub_point) { EC_POINT_free(pub_point); }
-    if (key) { EC_KEY_free(key); }
     if (sig) { ECDSA_SIG_free(sig); }
-    
+    if (pkey) { EVP_PKEY_free(pkey); }
+    if (md_ctx) { EVP_MD_CTX_free(md_ctx); }
+    if (pctx) { EVP_PKEY_CTX_free(pctx); }
+    if (der_sig) { OPENSSL_free(der_sig); }
+
     return isOK;
 }
 
