@@ -72,9 +72,13 @@ get_openssl_libs() {
             ssl_lib="$OPENSSL_DIR/bin/AppleTVSimulator26.1-arm64.sdk/lib/libssl.a"
             crypto_lib="$OPENSSL_DIR/bin/AppleTVSimulator26.1-arm64.sdk/lib/libcrypto.a"
             ;;
-        "macosx")
+        "macosx-arm64")
             ssl_lib="$OPENSSL_DIR/bin/MacOSX26.1-arm64.sdk/lib/libssl.a"
             crypto_lib="$OPENSSL_DIR/bin/MacOSX26.1-arm64.sdk/lib/libcrypto.a"
+            ;;
+        "macosx-x86_64")
+            ssl_lib="$OPENSSL_DIR/bin/MacOSX26.1-x86_64.sdk/lib/libssl.a"
+            crypto_lib="$OPENSSL_DIR/bin/MacOSX26.1-x86_64.sdk/lib/libcrypto.a"
             ;;
     esac
 
@@ -85,6 +89,7 @@ get_openssl_libs() {
 build_platform() {
     local sdk=$1
     local destination=$2
+    local extra_settings=$3
     local archive_path="$OUTPUT_DIR/archives/$sdk.xcarchive"
 
     echo ""
@@ -106,6 +111,7 @@ build_platform() {
         -archivePath "$archive_path" \
         "${COMMON_BUILD_SETTINGS[@]}" \
         "OTHER_LDFLAGS=-force_load $ssl_lib -force_load $crypto_lib" \
+        $extra_settings \
         -quiet
 
     if [ -d "$archive_path" ]; then
@@ -128,8 +134,8 @@ if build_platform "iphoneos" "generic/platform=iOS"; then
     ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/iphoneos.xcarchive/Products/Library/Frameworks/GMObjC.framework")
 fi
 
-# iOS Simulator
-if build_platform "iphonesimulator" "generic/platform=iOS Simulator"; then
+# iOS Simulator (arm64 only for Apple Silicon)
+if build_platform "iphonesimulator" "generic/platform=iOS Simulator" "ARCHS=arm64 ONLY_ACTIVE_ARCH=NO"; then
     ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/iphonesimulator.xcarchive/Products/Library/Frameworks/GMObjC.framework")
 fi
 
@@ -138,14 +144,73 @@ if build_platform "appletvos" "generic/platform=tvOS"; then
     ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/appletvos.xcarchive/Products/Library/Frameworks/GMObjC.framework")
 fi
 
-# tvOS Simulator
-if build_platform "appletvsimulator" "generic/platform=tvOS Simulator"; then
+# tvOS Simulator (arm64 only for Apple Silicon)
+if build_platform "appletvsimulator" "generic/platform=tvOS Simulator" "ARCHS=arm64 ONLY_ACTIVE_ARCH=NO"; then
     ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/appletvsimulator.xcarchive/Products/Library/Frameworks/GMObjC.framework")
 fi
 
-# macOS
-if build_platform "macosx" "generic/platform=macOS"; then
-    ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/macosx.xcarchive/Products/Library/Frameworks/GMObjC.framework")
+# macOS (Universal: arm64 + x86_64)
+echo ""
+echo "🔨 构建 macOS Universal (arm64 + x86_64)..."
+MACOS_ARM64_SUCCESS=false
+MACOS_X86_64_SUCCESS=false
+
+# 构建 macOS arm64
+if build_platform "macosx-arm64" "generic/platform=macOS" "ARCHS=arm64 ONLY_ACTIVE_ARCH=NO"; then
+    MACOS_ARM64_SUCCESS=true
+fi
+
+# 构建 macOS x86_64
+if build_platform "macosx-x86_64" "generic/platform=macOS" "ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO"; then
+    MACOS_X86_64_SUCCESS=true
+fi
+
+# 合并为 Universal Binary
+if [ "$MACOS_ARM64_SUCCESS" = true ] && [ "$MACOS_X86_64_SUCCESS" = true ]; then
+    echo "  📦 合并 macOS Universal Binary..."
+    MACOS_UNIVERSAL_DIR="$OUTPUT_DIR/archives/macosx-universal"
+    mkdir -p "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Headers"
+    mkdir -p "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Modules"
+    mkdir -p "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Resources"
+
+    # 使用 lipo 合并二进制
+    lipo -create \
+        "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/GMObjC" \
+        "$OUTPUT_DIR/archives/macosx-x86_64.xcarchive/Products/Library/Frameworks/GMObjC.framework/GMObjC" \
+        -output "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/GMObjC"
+
+    # 复制 Headers、Modules、Resources (从 arm64 版本)
+    cp -r "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Headers/"* \
+        "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Headers/"
+    cp -r "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Modules/"* \
+        "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Modules/"
+
+    # 复制 Info.plist
+    if [ -f "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Resources/Info.plist" ]; then
+        cp "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Resources/Info.plist" \
+            "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Resources/"
+    elif [ -f "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Info.plist" ]; then
+        cp "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework/Info.plist" \
+            "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions/A/Resources/"
+    fi
+
+    # 创建版本化结构的符号链接
+    cd "$MACOS_UNIVERSAL_DIR/GMObjC.framework/Versions"
+    ln -sf A Current
+    cd "$MACOS_UNIVERSAL_DIR/GMObjC.framework"
+    ln -sf Versions/Current/GMObjC GMObjC
+    ln -sf Versions/Current/Headers Headers
+    ln -sf Versions/Current/Modules Modules
+    ln -sf Versions/Current/Resources Resources
+
+    ARCHIVES+=("-framework" "$MACOS_UNIVERSAL_DIR/GMObjC.framework")
+    echo "  ✓ macOS Universal 完成"
+elif [ "$MACOS_ARM64_SUCCESS" = true ]; then
+    echo "  ⚠️  仅 arm64 成功，使用单架构"
+    ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/macosx-arm64.xcarchive/Products/Library/Frameworks/GMObjC.framework")
+elif [ "$MACOS_X86_64_SUCCESS" = true ]; then
+    echo "  ⚠️  仅 x86_64 成功，使用单架构"
+    ARCHIVES+=("-framework" "$OUTPUT_DIR/archives/macosx-x86_64.xcarchive/Products/Library/Frameworks/GMObjC.framework")
 fi
 
 # 创建 xcframework

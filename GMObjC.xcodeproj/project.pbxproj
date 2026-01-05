@@ -21,7 +21,6 @@
 		9CA353F72CE2029100630D51 /* GMSm2Utils.h in Headers */ = {isa = PBXBuildFile; fileRef = 9CA353EB2CE2029100630D51 /* GMSm2Utils.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		9CA353F82CE2029100630D51 /* GMSm4Utils.h in Headers */ = {isa = PBXBuildFile; fileRef = 9CA353EC2CE2029100630D51 /* GMSm4Utils.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		9CA353FA2CE202BA00630D51 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9CA353F92CE202BA00630D51 /* PrivacyInfo.xcprivacy */; };
-		9CA353FD2CE202D900630D51 /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9CA353FB2CE202D900630D51 /* openssl.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,7 +39,6 @@
 		9CA353EB2CE2029100630D51 /* GMSm2Utils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = GMSm2Utils.h; sourceTree = "<group>"; };
 		9CA353EC2CE2029100630D51 /* GMSm4Utils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = GMSm4Utils.h; sourceTree = "<group>"; };
 		9CA353F92CE202BA00630D51 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		9CA353FB2CE202D900630D51 /* openssl.xcframework */ = {isa = PBXFileReference; expectedSignature = "AppleDeveloperProgram:4BX77JHQHH:fei li"; lastKnownFileType = wrapper.xcframework; path = openssl.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,7 +46,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9CA353FD2CE202D900630D51 /* openssl.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -59,7 +56,6 @@
 			isa = PBXGroup;
 			children = (
 				9CA353D92CE200C600630D51 /* GMObjC */,
-				9CA353FC2CE202D900630D51 /* Frameworks */,
 				9CA353D82CE200C600630D51 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -91,14 +87,6 @@
 				9CA353E22CE2029100630D51 /* GMSm4Utils.m */,
 			);
 			path = GMObjC;
-			sourceTree = "<group>";
-		};
-		9CA353FC2CE202D900630D51 /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-				9CA353FB2CE202D900630D51 /* openssl.xcframework */,
-			);
-			path = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -345,6 +333,7 @@
 					"@loader_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 10.13;
+				TVOS_DEPLOYMENT_TARGET = 12.0;
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
@@ -352,7 +341,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SDKROOT = auto;
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx appletvos appletvsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_VERSION = 5.0;
@@ -386,6 +375,7 @@
 					"@loader_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 10.13;
+				TVOS_DEPLOYMENT_TARGET = 12.0;
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
@@ -393,7 +383,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SDKROOT = auto;
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx appletvos appletvsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_VERSION = 5.0;
