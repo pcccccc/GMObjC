@@ -34,12 +34,10 @@ fi
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# 通用构建设置 - 关键：隐藏 OpenSSL 符号
+# 通用构建设置
 COMMON_BUILD_SETTINGS=(
     "BUILD_LIBRARY_FOR_DISTRIBUTION=YES"
     "SKIP_INSTALL=NO"
-    "OTHER_CFLAGS=-fvisibility=hidden"
-    "GCC_SYMBOLS_PRIVATE_EXTERN=YES"
     "HEADER_SEARCH_PATHS=$OPENSSL_DIR/include"
     "CODE_SIGNING_ALLOWED=NO"
     "CODE_SIGN_IDENTITY=-"
